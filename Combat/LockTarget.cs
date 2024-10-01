@@ -8,29 +8,60 @@ using BLINK.RPGBuilder.Combat;
 using BLINK.RPGBuilder.LogicMono;
 using UnityEngine;
 using Cinemachine;
+using UnityEngine.SceneManagement;
 
 namespace BLINK.RPGBuilder.Managers
 {
-    public class CustomInputManager : MonoBehaviour
+    public class Target_system : MonoBehaviour
     {
-        private string currentlyModifiedActionKey;
-        private bool isKeyChecking;
-
-        public List<CanvasGroup> allOpenedPanels = new List<CanvasGroup>();
-
-        private int tabTargetSelected;
-        private List<CombatEntity> previouslySelectedCbtNodes = new List<CombatEntity>();
-
         private CombatEntity currentLockedTarget;
-
         public CinemachineVirtualCamera cinemachineCamera;  // Referência à CinemachineVirtualCamera
-
         public float maxLockDistance = 20f;  // Distância máxima para manter o lock no alvo
+        private bool isLockedOn;  // Estado de lock-on
 
         private void Awake()
         {
             if (Instance != null) return;
             Instance = this;
+
+            // Somente tentar anexar a câmera se a cena ativa não for "MainMenu"
+            if (SceneManager.GetActiveScene().name != "MainMenu")
+            {
+                AttachVirtualCamera();
+            }
+        }
+
+        private void AttachVirtualCamera()
+        {
+            GameObject player = GameObject.FindGameObjectWithTag("Player");
+            if (player != null)
+            {
+                GameObject[] virtualCameraObjects = Resources.FindObjectsOfTypeAll<GameObject>()
+                    .Where(obj => obj.CompareTag("VirtualCamera"))
+                    .ToArray();
+
+                if (virtualCameraObjects.Length > 0)
+                {
+                    GameObject virtualCameraObject = virtualCameraObjects[0];
+                    cinemachineCamera = virtualCameraObject.GetComponent<CinemachineVirtualCamera>();
+                    if (cinemachineCamera == null)
+                    {
+                        Debug.LogError("O objeto com a tag 'VirtualCamera' não contém um componente CinemachineVirtualCamera!");
+                    }
+                    else
+                    {
+                        Debug.Log("VirtualCamera anexada ao script Target_system.");
+                    }
+                }
+                else
+                {
+                    Debug.LogError("Nenhum objeto com a tag 'VirtualCamera' foi encontrado na cena!");
+                }
+            }
+            else
+            {
+                Invoke("AttachVirtualCamera", 0.5f);
+            }
         }
 
         private Transform FindFollowTarget()
@@ -43,7 +74,7 @@ namespace BLINK.RPGBuilder.Managers
                     return followTarget;
                 }
             }
-            return GameState.playerEntity.transform;  // Fallback para seguir o player diretamente caso o Follow não seja encontrado
+            return GameState.playerEntity.transform;
         }
 
         private Transform FindLookAtTarget()
@@ -56,7 +87,7 @@ namespace BLINK.RPGBuilder.Managers
                     return lookAtTarget;
                 }
             }
-            return GameState.playerEntity.transform;  // Fallback para olhar para o player diretamente caso o LookAt não seja encontrado
+            return GameState.playerEntity.transform;
         }
 
         public void SetCinemachineTarget(Transform followTarget, Transform lookAtTarget)
@@ -68,133 +99,30 @@ namespace BLINK.RPGBuilder.Managers
             }
         }
 
-        public void AddOpenedPanel(CanvasGroup cg)
-        {
-            if (!allOpenedPanels.Contains(cg)) allOpenedPanels.Insert(0, cg);
-            // Desativar a CinemachineVirtualCamera quando um painel de UI é aberto
-            if (cinemachineCamera != null)
-            {
-                cinemachineCamera.gameObject.SetActive(false);
-            }
-        }
-
-        public void RemoveOpenedPanel(CanvasGroup cg)
-        {
-            if (allOpenedPanels.Contains(cg))
-            {
-                allOpenedPanels.Remove(cg);
-            }
-        }
-
         private void Update()
         {
-            if (!RPGBuilderEssentials.Instance.isInGame) return;
+            if (GameState.playerEntity == null) return;
 
-            // Gerenciar tecla ESC
-            if (Input.GetKeyDown(KeyCode.Escape))
-            {
-                if (HandleEscape()) return;
-            }
-
-            // Lidar com a seleção de alvos com TAB
             if (Input.GetKeyDown(KeyCode.Tab))
             {
                 HandleTabTarget();
             }
 
-            if (GameState.playerEntity == null) return;
-            if (UIEvents.Instance.IsPanelOpen("--- DEVELOPER UI ---") && UIEvents.Instance.IsTyping()) return;
-
-            // Se um painel UI estiver aberto, ignorar outras interações
-            if (allOpenedPanels.Count > 0) return;
-
-            if (CheckComboKeys()) return;
-            CheckActionKeys();
-            HandleActionAbilities();
-
-            // Manter o lock no alvo, se existir
             if (currentLockedTarget != null)
             {
                 UpdateTargetLock(currentLockedTarget);
             }
             else
             {
-                // Desativar a câmera do Cinemachine se não houver alvo
-                if (cinemachineCamera != null)
+                if (cinemachineCamera != null && isLockedOn)
                 {
                     cinemachineCamera.gameObject.SetActive(false);
-                }
-            }
-
-            if (!isKeyChecking) return;
-            HandleKeyChange();
-        }
-
-        private bool HandleEscape()
-        {
-            // Fechar o painel UI mais recente
-            if (allOpenedPanels.Count > 0)
-            {
-                if (allOpenedPanels[0].gameObject == null)
-                {
-                    allOpenedPanels.Clear();
-                    return true;
+                    isLockedOn = false;
                 }
 
-                allOpenedPanels[0].gameObject.GetComponent<DisplayPanel>().Hide();
-                allOpenedPanels.RemoveAt(0);
-                return false;
-            }
-
-            // Cancelar habilidades em execução
-            if (GameState.playerEntity.IsCasting())
-            {
-                GameState.playerEntity.ResetCasting();
-                return false;
-            }
-
-            // Se não houver mais painéis e nenhuma habilidade em execução, desativar o lock do alvo
-            if (GameState.playerEntity.GetTarget() != null)
-            {
-                GameState.playerEntity.ResetTarget();
-                currentLockedTarget = null;  // Reset target lock when target is cleared
-
-                // Desativar a câmera do Cinemachine quando o alvo é desmarcado
-                if (cinemachineCamera != null)
+                if (isLockedOn)
                 {
-                    cinemachineCamera.gameObject.SetActive(false);
-                }
-                // Desativar o parâmetro "Target" no Animator
-                GameState.playerEntity.controllerEssentials.anim.SetBool("Target", false);
-                return false;
-            }
-
-            return true;
-        }
-
-        private void HandleActionAbilities()
-        {
-            if (UIEvents.Instance.CursorHoverUI) return;
-            if (GameState.playerEntity.IsShapeshifted() && GameState.playerEntity.ShapeshiftedEffect.ranks[GameState.playerEntity.ShapeshiftedEffectRank].shapeshiftingNoActionAbilities) return;
-            foreach (var ActionAbility in Character.Instance.CharacterData.ActionAbilities)
-            {
-                KeyCode key = KeyCode.None;
-                switch (ActionAbility.keyType)
-                {
-                    case RPGCombatDATA.ActionAbilityKeyType.OverrideKey:
-                        key = ActionAbility.key;
-                        break;
-                    case RPGCombatDATA.ActionAbilityKeyType.ActionKey:
-                        key = RPGBuilderUtilities.GetCurrentKeyByActionKeyName(ActionAbility.actionKeyName);
-                        break;
-                }
-                if (Input.GetKeyDown(key) && Time.time >= ActionAbility.NextTimeUse)
-                {
-                    CombatManager.Instance.InitAbility(GameState.playerEntity, ActionAbility.ability, GameState.playerEntity.GetCurrentAbilityRank(ActionAbility.ability, false), false);
-                }
-                if (Input.GetKeyUp(key))
-                {
-                    CombatManager.Instance.AbilityKeyUp(ActionAbility.ability, false);
+                    GameState.playerEntity.controllerEssentials.anim.SetBool("Target", false);
                 }
             }
         }
@@ -213,7 +141,7 @@ namespace BLINK.RPGBuilder.Managers
                 if (cbtNode == GameState.playerEntity) continue;
                 CombatData.EntityAlignment thisNodeAlignment = FactionManager.Instance.GetAlignment(cbtNode.GetFaction(),
                     FactionManager.Instance.GetEntityStanceToFaction(GameState.playerEntity, cbtNode.GetFaction()));
-                
+
                 if (thisNodeAlignment == CombatData.EntityAlignment.Ally) continue;
                 if (cbtNode == GameState.playerEntity.GetTarget()) continue;
                 float thisDist = Vector3.Distance(cbtNode.transform.position,
@@ -223,370 +151,69 @@ namespace BLINK.RPGBuilder.Managers
                 var angle = Vector3.Angle(GameState.playerEntity.transform.forward, pointDirection);
                 if (!(angle < maxAngle)) continue;
                 validTargets++;
-                if (previouslySelectedCbtNodes.Contains(cbtNode)) continue;
-                if (!(lastDist > thisDist)) continue;
-                newTarget = cbtNode;
-                lastDist = thisDist;
+                if (lastDist > thisDist)
+                {
+                    newTarget = cbtNode;
+                    lastDist = thisDist;
+                }
             }
 
-            if (newTarget == null)
+            if (newTarget != null)
             {
-                previouslySelectedCbtNodes.Clear();
-                tabTargetSelected = 0;
-                if (validTargets > 0) HandleTabTarget();
-                return;
-            }
+                GameState.playerEntity.SetTarget(newTarget);
+                currentLockedTarget = newTarget;
 
-            GameState.playerEntity.SetTarget(newTarget);
-            currentLockedTarget = newTarget;  // Set the locked target
-            previouslySelectedCbtNodes.Add(newTarget);
-            tabTargetSelected++;
-            if (tabTargetSelected > 5)
-            {
-                previouslySelectedCbtNodes.RemoveAt(0);
-            }
-
-            // Ativar a câmera do Cinemachine quando um alvo é selecionado
-            if (cinemachineCamera != null)
-            {
-                cinemachineCamera.gameObject.SetActive(true);
-
-                // Encontre os alvos de Follow e LookAt dentro da hierarquia do player e configure a câmera
-                Transform followTarget = FindFollowTarget();
-                Transform lookAtTarget = currentLockedTarget.transform; // Focar no alvo atual
-                SetCinemachineTarget(followTarget, lookAtTarget);
-                ConfigureCameraForPlayer();
-
-                // Ativar o parâmetro "Target" no Animator
+                isLockedOn = true;
                 GameState.playerEntity.controllerEssentials.anim.SetBool("Target", true);
 
-                // Ajustar a câmera para seguir o alvo
-                NewInputTarget(currentLockedTarget.transform);
+                if (cinemachineCamera != null)
+                {
+                    cinemachineCamera.gameObject.SetActive(true);
+                    Transform followTarget = FindFollowTarget();
+                    Transform lookAtTarget = currentLockedTarget.transform;
+                    SetCinemachineTarget(followTarget, lookAtTarget);
+                }
             }
         }
 
         private void UpdateTargetLock(CombatEntity target)
         {
-            if (target == null || GameState.playerEntity == null || cinemachineCamera == null) return;
-
-            // Verificar a distância entre o player e o alvo
-            float distance = Vector3.Distance(GameState.playerEntity.transform.position, target.transform.position);
-
-            if (distance > maxLockDistance)
+            if (target == null || GameState.playerEntity == null || cinemachineCamera == null || target.IsDead())  // Verificação adicional para alvo destruído ou morto
             {
-                // Se a distância for maior que o limite, desative a câmera e o lock
+                // Desativar o lock-on e o parâmetro "Target"
                 currentLockedTarget = null;
+                isLockedOn = false;
                 cinemachineCamera.gameObject.SetActive(false);
-
-                // Desativar o parâmetro "Target" no Animator
                 GameState.playerEntity.controllerEssentials.anim.SetBool("Target", false);
                 return;
             }
 
-            // Capturar os inputs de movimentação (AWDS)
-            float moveX = Input.GetAxis("Horizontal"); // Captura a movimentação no eixo X
-            float moveY = Input.GetAxis("Vertical");   // Captura a movimentação no eixo Y
+            float distance = Vector3.Distance(GameState.playerEntity.transform.position, target.transform.position);
 
-            // Verificar as combinações para StrafeForwardLeft (AW) e StrafeForwardRight (WD)
-            if (!(moveX < 0 && moveY > 0) && !(moveX > 0 && moveY > 0)) // Se não for AW ou WD
+            if (distance > maxLockDistance)
             {
-                // Manter o player de frente para o alvo
+                currentLockedTarget = null;
+                isLockedOn = false;
+                cinemachineCamera.gameObject.SetActive(false);
+                GameState.playerEntity.controllerEssentials.anim.SetBool("Target", false);
+                return;
+            }
+
+            float moveX = Input.GetAxis("Horizontal");
+            float moveY = Input.GetAxis("Vertical");
+
+            if (!(moveX == -1 && moveY == 1) && !(moveX == 1 && moveY == 1))
+            {
                 Vector3 directionToTarget = target.transform.position - GameState.playerEntity.transform.position;
-                directionToTarget.y = 0;  // Manter a rotação apenas no eixo Y
+                directionToTarget.y = 0;
                 GameState.playerEntity.transform.rotation = Quaternion.LookRotation(directionToTarget);
             }
 
-            // Atualizar os parâmetros do Animator para controlar o BlendTree
-            GameState.playerEntity.controllerEssentials.anim.SetFloat("MoveDirectionX", moveX);
-            GameState.playerEntity.controllerEssentials.anim.SetFloat("MoveDirectionY", moveY);
-
-            // Aplicar a movimentação
             Vector3 strafeMovement = new Vector3(moveX, 0, moveY);
             Vector3 movement = Quaternion.Euler(0, GameState.playerEntity.transform.eulerAngles.y, 0) * strafeMovement;
             GameState.playerEntity.transform.Translate(movement * Time.deltaTime, Space.World);
         }
 
-        private void SetCinemachineCameraSettings(Vector3 offset, float height, float distance)
-        {
-            if (cinemachineCamera != null)
-            {
-                var transposer = cinemachineCamera.GetCinemachineComponent<CinemachineTransposer>();
-                if (transposer != null)
-                {
-                    transposer.m_FollowOffset = new Vector3(offset.x, height, -distance);
-                    transposer.m_XDamping = 0.5f;  // Damping pode ser ajustado para suavizar o movimento da câmera
-                    transposer.m_YDamping = 0.5f;
-                    transposer.m_ZDamping = 0.5f;
-                }
-            }
-        }
-
-        private void ConfigureCameraForPlayer()
-        {
-            // Definindo um offset de altura e distância
-            SetCinemachineCameraSettings(new Vector3(0, 2f, 0), 3f, 6f);  // Exemplo de altura e distância
-        }
-
-        private void NewInputTarget(Transform target) // Ajusta os valores dos eixos X e Y da câmera para seguir o alvo.
-        {
-            if (!target) return;
-
-            Vector3 viewPos = Camera.main.WorldToViewportPoint(target.position);
-
-            // Calcular novos valores de input para a câmera seguir o alvo
-            float mouseX = (viewPos.x - 0.5f) * 3f;
-            float mouseY = (viewPos.y - 0.5f) * 3f;
-
-            // Aplicar os valores calculados nos eixos X e Y da Cinemachine
-            var transposer = cinemachineCamera.GetCinemachineComponent<CinemachineComposer>();
-            if (transposer != null)
-            {
-                transposer.m_TrackedObjectOffset.x += mouseX;
-                transposer.m_TrackedObjectOffset.y += mouseY;
-            }
-        }
-
-        private void HandleKeyChange()
-        {
-            foreach (KeyCode keyPressed in Enum.GetValues(typeof(KeyCode)))
-                if (Input.GetKeyDown(keyPressed))
-                {
-                    ModifyKeybind(currentlyModifiedActionKey, keyPressed);
-                    isKeyChecking = false;
-                    currentlyModifiedActionKey = "";
-                }
-        }
-
-        private void CheckActionKeyUp(string actionKeyName)
-        {
-            switch (actionKeyName)
-            {
-                case "SPRINT":
-                    GameState.playerEntity.controllerEssentials.EndSprint();
-                    break;
-            }
-        }
-        
-        private void CheckActionKeys()
-        {
-            foreach (var t in Character.Instance.CharacterData.ActionKeys)
-            {
-                bool up = Input.GetKeyUp(t.currentKey);
-                bool down = Input.GetKeyDown(t.currentKey);
-                if (up) CheckActionKeyUp(t.actionKeyName);
-                if (t.actionKeyName.Contains("ACTION_BAR_SLOT_"))
-                {
-                    if (!down && !up) continue;
-                    if (!up && UIEvents.Instance.CursorHoverUI) return;
-                    ActionBarSlot slot = ActionBarManager.Instance.GetActionBarSlotFromActionKeyName(t.actionKeyName);
-                    if (slot == null) continue;
-                    if (up && slot.contentType != CharacterEntries.ActionBarSlotContentType.Ability) continue;
-                    
-                    switch (slot.contentType)
-                    {
-                        case CharacterEntries.ActionBarSlotContentType.None:
-                            break;
-                        case CharacterEntries.ActionBarSlotContentType.Ability:
-                            if (up)
-                            {
-                                CombatManager.Instance.AbilityKeyUp(slot.ThisAbility, false);
-                            }
-                            else
-                            {
-                                if (RPGBuilderUtilities.IsAbilityInCombo(slot.ThisAbility.ID)) continue;
-                                CombatManager.Instance.InitAbility(GameState.playerEntity, slot.ThisAbility, GameState.playerEntity.GetCurrentAbilityRank(slot.ThisAbility, true), true);
-                            }
-                            break;
-                        case CharacterEntries.ActionBarSlotContentType.Item:
-                            InventoryManager.Instance.UseItemFromBar(slot.ThisItem);
-                            break;
-                    }
-                    
-                }
-                else if (t.actionKeyName.Contains("UI_PANEL_"))
-                {
-                    if (!down) continue;
-                    // Abrir o painel UI correspondente
-                    var uiPanelString = t.actionKeyName.Replace("UI_PANEL_", "");
-                    switch (uiPanelString)
-                    {
-                        case "CHARACTER":
-                            UIEvents.Instance.OnPanelToggle("Character");
-                            break;
-                        case "INVENTORY":
-                            UIEvents.Instance.OnPanelToggle("Inventory");
-                            break;
-                        case "SKILLS":
-                            UIEvents.Instance.OnPanelToggle("Skill_Book");
-                            break;
-                        case "QUESTS":
-                            UIEvents.Instance.OnPanelToggle("Quest_Log");
-                            break;
-                        case "OPTIONS":
-                            if (GameState.playerEntity.GetTarget() == null) UIEvents.Instance.OnPanelToggle("Options");
-                            break;
-                        case "LOOTALL":
-                            if (UIEvents.Instance.IsPanelOpen("Loot")) GameEvents.Instance.OnLootAllBag();
-                            break;
-                        case "ENCHANTING":
-                            UIEvents.Instance.OnPanelToggle("Enchanting");
-                            break;
-                        case "SOCKETING":
-                            UIEvents.Instance.OnPanelToggle("Socketing");
-                            break;
-                        case "SPELLBOOK":
-                            UIEvents.Instance.OnPanelToggle("Spellbook");
-                            break;
-                        case "WEAPON_TEMPLATES":
-                            UIEvents.Instance.OnPanelToggle("Weapon_Templates");
-                            break;
-                        case "STATS_ALLOCATION":
-                            UIEvents.Instance.OnPanelToggle("Stats_Allocation");
-                            break;
-                    }
-                }
-                else
-                {
-                    if (!down) continue;
-                    switch (t.actionKeyName)
-                    {
-                        case "TOGGLE_CURSOR":
-                            GameState.playerEntity.controllerEssentials.ToggleCameraMouseLook();
-                            break;
-                        case "SPRINT":
-                            GameState.playerEntity.controllerEssentials.StartSprint();
-                            break;
-                        case "INTERACT":
-                            if (WorldInteractableDisplayManager.Instance.cachedInteractable != null) WorldInteractableDisplayManager.Instance.Interact();
-                            break;
-                        case "TOGGLE_COMBAT_STATE":
-                            if (GameDatabase.Instance.GetCombatSettings().AutomaticCombatStates) return;
-                            if (!GameState.playerEntity.IsInCombat()) GameState.playerEntity.EnterCombat();
-                            else GameState.playerEntity.ResetCombat();
-                            break;
-                        case "PETS_FOLLOW":
-                            CombatEvents.Instance.OnPlayerPetsFollow();
-                            break;
-                        case "PETS_STAY":
-                            CombatEvents.Instance.OnPlayerPetsStay();
-                            break;
-                        case "PETS_AGGRESSIVE":
-                            CombatEvents.Instance.OnPlayerPetsAggro();
-                            break;
-                        case "PETS_DEFEND":
-                            CombatEvents.Instance.OnPlayerPetsDefend();
-                            break;
-                        case "PETS_RESET":
-                            CombatEvents.Instance.OnPlayerPetsReset();
-                            break;
-                        case "PETS_ATTACK":
-                            CombatEvents.Instance.OnPlayerPetsAttack();
-                            break;
-                    }
-
-                    if (t.actionKeyName.Contains("SHAPESHIFT_"))
-                    {
-                        string numberText = t.actionKeyName.Replace("SHAPESHIFT_", "");
-                        int shapeshiftNumber = int.Parse(numberText);
-
-                        if (ShapeshiftingSlotsDisplayManager.Instance.slots.Count >= shapeshiftNumber)
-                        {
-                            ShapeshiftingSlotsDisplayManager.Instance.ActivateShapeshift(shapeshiftNumber - 1);
-                        }
-                    }
-                }
-            }
-        }
-
-        public void HandleUIPanelClose(CanvasGroup cg)
-        {
-            if (allOpenedPanels.Contains(cg))
-            {
-                allOpenedPanels.Remove(cg);
-
-                if (GameState.playerEntity != null && allOpenedPanels.Count == 0)
-                {
-                    GameState.playerEntity.controllerEssentials.GameUIPanelAction(false);
-                }
-            }
-            else
-            {
-                GameState.playerEntity.controllerEssentials.GameUIPanelAction(false);
-            }
-        }
-
-        private bool CheckComboKeys()
-        {
-            if (UIEvents.Instance.CursorHoverUI) return false;
-            foreach (var t in GameState.playerEntity.GetActiveCombos())
-            {
-                if (!Input.GetKeyDown(t.keyRequired)) continue;
-                if (t.readyTime > 0) continue;
-                CombatManager.Instance.CancelOtherComboOptions(GameState.playerEntity, t.combo);
-                CombatManager.Instance.InitAbility(GameState.playerEntity,
-                    GameDatabase.Instance.GetAbilities()[t.combo.combos[t.comboIndex].abilityID], GameState.playerEntity.GetCurrentAbilityRank(GameDatabase.Instance.GetAbilities()[t.combo.combos[t.comboIndex].abilityID], t.combo.combos[t.comboIndex].abMustBeKnown),
-                    t.combo.combos[t.comboIndex].abMustBeKnown);
-                return true;
-            }
-
-            return false;
-        }
-
-        public void InitKeyChecking(string keybindName)
-        {
-            isKeyChecking = true;
-            currentlyModifiedActionKey = keybindName;
-        }
-
-        private void ModifyKeybind(string actionKeyName, KeyCode newKey)
-        {
-            foreach (var actionKey in Character.Instance.CharacterData.ActionKeys.Where(actionKey => actionKey.actionKeyName == actionKeyName))
-            {
-                if (!isKeyAvailable(newKey))
-                {
-                    UIEvents.Instance.OnShowAlertMessage("This key is not available", 3);
-                    return;
-                }
-                actionKey.currentKey = newKey;
-
-                if (actionKey.actionKeyName.Contains("ACTION_BAR_SLOT_"))
-                {
-                    var slotIDString = actionKey.actionKeyName.Replace("ACTION_BAR_SLOT_", "");
-                    var ID = int.Parse(slotIDString);
-                    ActionBarManager.Instance.UpdateSlotKeyText(ID - 1, newKey);
-                }
-            }
-
-            GameEvents.Instance.OnKeybindChanged(actionKeyName, newKey);
-        }
-
-        private bool isKeyAvailable(KeyCode key)
-        {
-            foreach (var actionKey in Character.Instance.CharacterData.ActionKeys.Where(actionKey => actionKey.currentKey == key))
-            {
-                return !RPGBuilderUtilities.isActionKeyUnique(actionKey.actionKeyName);
-            }
-
-            return true;
-        }
-
-        public void ResetKey(string actionKeyName)
-        {
-            foreach (var actionKey in Character.Instance.CharacterData.ActionKeys.Where(actionKey => actionKey.actionKeyName == actionKeyName))
-            {
-                actionKey.currentKey = KeyCode.None;
-
-                if (actionKey.actionKeyName.Contains("ACTION_BAR_SLOT_"))
-                {
-                    var slotIDString = actionKey.actionKeyName.Replace("ACTION_BAR_SLOT_", "");
-                    var ID = int.Parse(slotIDString);
-                    ActionBarManager.Instance.UpdateSlotKeyText(ID - 1, actionKey.currentKey);
-                }
-                
-                GameEvents.Instance.OnKeybindChanged(actionKeyName, actionKey.currentKey);
-            }
-        }
-
-        public static CustomInputManager Instance { get; private set; }
+        public static Target_system Instance { get; private set; }
     }
 }
